@@ -1,0 +1,603 @@
+// src/agent/modify.ts
+// Utilities for modifying agent configuration
+
+import type {
+  AgentState,
+  AnthropicModelSettings,
+  GoogleAIModelSettings,
+  OpenAIModelSettings,
+} from "@letta-ai/letta-client/resources/agents/agents";
+import type { Conversation } from "@letta-ai/letta-client/resources/conversations/conversations";
+import { getBackend } from "@/backend";
+import { OPENAI_CODEX_PROVIDER_NAME } from "@/providers/openai-codex-provider";
+import { debugLog } from "@/utils/debug";
+import { isRecord } from "@/utils/type-guards";
+import { getModelContextWindow } from "./available-models";
+
+type ModelSettings =
+  | OpenAIModelSettings
+  | AnthropicModelSettings
+  | GoogleAIModelSettings
+  | Record<string, unknown>;
+
+function supportsDistinctAnthropicXHighEffort(modelHandle: string): boolean {
+  return (
+    modelHandle.includes("claude-opus-4-7") ||
+    modelHandle.includes("claude-opus-4-8")
+  );
+}
+
+/**
+ * Builds model_settings from updateArgs based on provider type.
+ * Always ensures parallel_tool_calls is enabled.
+ */
+function buildModelSettings(
+  modelHandle: string,
+  updateArgs?: Record<string, unknown>,
+): ModelSettings {
+  // Include our custom ChatGPT OAuth provider (chatgpt-plus-pro)
+  const isOpenAICodex = modelHandle.startsWith("openai-codex/");
+  const isOpenAI =
+    modelHandle.startsWith("openai/") ||
+    isOpenAICodex ||
+    modelHandle.startsWith(`${OPENAI_CODEX_PROVIDER_NAME}/`);
+  // Include legacy custom Anthropic OAuth provider (claude-pro-max) and minimax
+  const isAnthropic =
+    modelHandle.startsWith("anthropic/") ||
+    modelHandle.startsWith("claude-pro-max/") ||
+    modelHandle.startsWith("minimax/");
+  const isZai = modelHandle.startsWith("zai/");
+  const isGoogleAI = modelHandle.startsWith("google_ai/");
+  const isGoogleVertex = modelHandle.startsWith("google_vertex/");
+  const isOpenRouter = modelHandle.startsWith("openrouter/");
+  const isBedrock = modelHandle.startsWith("bedrock/");
+
+  let settings: ModelSettings;
+
+  if (isOpenAI || isOpenRouter) {
+    const openaiSettings: OpenAIModelSettings = {
+      provider_type: "openai",
+      parallel_tool_calls: true,
+    };
+    if (isOpenAICodex) {
+      (openaiSettings as Record<string, unknown>).provider_type =
+        "chatgpt_oauth";
+    }
+    if (updateArgs?.reasoning_effort) {
+      openaiSettings.reasoning = {
+        reasoning_effort: updateArgs.reasoning_effort as
+          | "none"
+          | "minimal"
+          | "low"
+          | "medium"
+          | "high"
+          | "xhigh",
+      };
+    }
+    const verbosity = updateArgs?.verbosity;
+    if (verbosity === "low" || verbosity === "medium" || verbosity === "high") {
+      // The backend supports verbosity for OpenAI-family providers; the generated
+      // client type may lag this field, so set it via a narrow record cast.
+      (openaiSettings as Record<string, unknown>).verbosity = verbosity;
+    }
+    if (typeof updateArgs?.strict === "boolean") {
+      openaiSettings.strict = updateArgs.strict;
+    }
+    if (updateArgs && "service_tier" in updateArgs) {
+      (openaiSettings as Record<string, unknown>).service_tier =
+        updateArgs.service_tier === "priority" ? "priority" : null;
+    }
+    settings = openaiSettings;
+  } else if (isAnthropic) {
+    const anthropicSettings: AnthropicModelSettings = {
+      provider_type: "anthropic",
+      parallel_tool_calls: true,
+    };
+    // Map reasoning_effort to Anthropic's effort field (controls token spending via output_config)
+    const effort = updateArgs?.reasoning_effort;
+    const hasDistinctXHigh = supportsDistinctAnthropicXHighEffort(modelHandle);
+    if (effort === "low" || effort === "medium" || effort === "high") {
+      anthropicSettings.effort = effort;
+    } else if (effort === "xhigh") {
+      // "xhigh" is distinct on Opus 4.7+; older Anthropic models map it to backend "max".
+      (anthropicSettings as Record<string, unknown>).effort = hasDistinctXHigh
+        ? "xhigh"
+        : "max";
+    } else if (effort === "max") {
+      // "max" is valid on the backend but the SDK type hasn't caught up yet
+      (anthropicSettings as Record<string, unknown>).effort = effort;
+    }
+    // Build thinking config if either enable_reasoner or max_reasoning_tokens is specified
+    if (
+      updateArgs?.enable_reasoner !== undefined ||
+      typeof updateArgs?.max_reasoning_tokens === "number"
+    ) {
+      anthropicSettings.thinking = {
+        type: updateArgs?.enable_reasoner === false ? "disabled" : "enabled",
+        ...(typeof updateArgs?.max_reasoning_tokens === "number" && {
+          budget_tokens: updateArgs.max_reasoning_tokens,
+        }),
+      };
+    }
+    if (typeof updateArgs?.strict === "boolean") {
+      (anthropicSettings as Record<string, unknown>).strict = updateArgs.strict;
+    }
+    settings = anthropicSettings;
+  } else if (isZai) {
+    // Zai uses the same model_settings structure as other providers.
+    // Ensure parallel_tool_calls is enabled.
+    settings = {
+      provider_type: "zai",
+      parallel_tool_calls: true,
+    };
+  } else if (isGoogleAI) {
+    const googleSettings: GoogleAIModelSettings & { temperature?: number } = {
+      provider_type: "google_ai",
+      parallel_tool_calls: true,
+    };
+    if (updateArgs?.thinking_budget !== undefined) {
+      googleSettings.thinking_config = {
+        thinking_budget: updateArgs.thinking_budget as number,
+      };
+    }
+    if (typeof updateArgs?.temperature === "number") {
+      googleSettings.temperature = updateArgs.temperature as number;
+    }
+    settings = googleSettings;
+  } else if (isGoogleVertex) {
+    // Vertex AI uses the same Google provider on the backend; only the handle differs.
+    const googleVertexSettings: Record<string, unknown> = {
+      provider_type: "google_vertex",
+      parallel_tool_calls: true,
+    };
+    if (updateArgs?.thinking_budget !== undefined) {
+      (googleVertexSettings as Record<string, unknown>).thinking_config = {
+        thinking_budget: updateArgs.thinking_budget as number,
+      };
+    }
+    if (typeof updateArgs?.temperature === "number") {
+      (googleVertexSettings as Record<string, unknown>).temperature =
+        updateArgs.temperature as number;
+    }
+    settings = googleVertexSettings;
+  } else if (isBedrock) {
+    // AWS Bedrock - supports Anthropic Claude models with thinking config
+    const bedrockSettings: Record<string, unknown> = {
+      provider_type: "bedrock",
+      parallel_tool_calls: true,
+    };
+    // Map reasoning_effort to Anthropic's effort field (Bedrock runs Claude models)
+    const effort = updateArgs?.reasoning_effort;
+    const hasDistinctXHigh = supportsDistinctAnthropicXHighEffort(modelHandle);
+    if (effort === "low" || effort === "medium" || effort === "high") {
+      bedrockSettings.effort = effort;
+    } else if (effort === "xhigh") {
+      bedrockSettings.effort = hasDistinctXHigh ? "xhigh" : "max";
+    } else if (effort === "max") {
+      bedrockSettings.effort = effort;
+    }
+    // Build thinking config if either enable_reasoner or max_reasoning_tokens is specified
+    if (
+      updateArgs?.enable_reasoner !== undefined ||
+      typeof updateArgs?.max_reasoning_tokens === "number"
+    ) {
+      bedrockSettings.thinking = {
+        type: updateArgs?.enable_reasoner === false ? "disabled" : "enabled",
+        ...(typeof updateArgs?.max_reasoning_tokens === "number" && {
+          budget_tokens: updateArgs.max_reasoning_tokens,
+        }),
+      };
+    }
+    settings = bedrockSettings;
+  } else {
+    // Unknown/BYOK providers (e.g. openai-proxy) — assume OpenAI-compatible
+    const openaiProxySettings: OpenAIModelSettings = {
+      provider_type: "openai",
+      parallel_tool_calls:
+        typeof updateArgs?.parallel_tool_calls === "boolean"
+          ? updateArgs.parallel_tool_calls
+          : true,
+    };
+    if (updateArgs?.reasoning_effort) {
+      openaiProxySettings.reasoning = {
+        reasoning_effort: updateArgs.reasoning_effort as
+          | "none"
+          | "minimal"
+          | "low"
+          | "medium"
+          | "high"
+          | "xhigh",
+      };
+    }
+    if (typeof updateArgs?.strict === "boolean") {
+      (openaiProxySettings as Record<string, unknown>).strict =
+        updateArgs.strict;
+    }
+    settings = openaiProxySettings;
+  }
+
+  // Apply max_output_tokens only when provider_type is present and the value
+  // is a concrete number.  Null means "unset" and should only be forwarded via
+  // the top-level max_tokens field — some providers (e.g. OpenAI) reject null
+  // inside their typed model_settings.
+  if (
+    typeof updateArgs?.max_output_tokens === "number" &&
+    "provider_type" in settings
+  ) {
+    (settings as Record<string, unknown>).max_output_tokens =
+      updateArgs.max_output_tokens;
+  }
+
+  // Preserve OpenCode-style modality metadata when present so local-model
+  // transforms can decide whether file/image parts are safe to send.
+  if (isRecord(updateArgs?.modalities)) {
+    (settings as Record<string, unknown>).modalities = updateArgs.modalities;
+  }
+  if (isRecord(updateArgs?.capabilities)) {
+    (settings as Record<string, unknown>).capabilities =
+      updateArgs.capabilities;
+  }
+
+  return settings;
+}
+
+/**
+ * Updates an agent's model and model settings.
+ *
+ * Uses the new model_settings field instead of deprecated llm_config.
+ *
+ * @param agentId - The agent ID
+ * @param modelHandle - The model handle (e.g., "anthropic/claude-sonnet-4-5-20250929")
+ * @param updateArgs - Additional config args (context_window, reasoning_effort, enable_reasoner, etc.)
+ * @param options - Optional update behavior overrides
+ * @returns The updated agent state from the server (includes llm_config and model_settings)
+ */
+export interface UpdateAgentLLMConfigOptions {
+  preserveContextWindow?: boolean;
+}
+
+export async function updateAgentLLMConfig(
+  agentId: string,
+  modelHandle: string,
+  updateArgs?: Record<string, unknown>,
+  options?: UpdateAgentLLMConfigOptions,
+): Promise<AgentState> {
+  const backend = getBackend();
+
+  const modelSettings = buildModelSettings(modelHandle, updateArgs);
+  const explicitContextWindow = updateArgs?.context_window as
+    | number
+    | undefined;
+  const shouldPreserveContextWindow = options?.preserveContextWindow === true;
+  // Resume refresh updates should not implicitly reset context window.
+  const contextWindow =
+    explicitContextWindow ??
+    (!shouldPreserveContextWindow
+      ? await getModelContextWindow(modelHandle)
+      : undefined);
+  const hasModelSettings = Object.keys(modelSettings).length > 0;
+
+  await backend.updateAgent(agentId, {
+    model: modelHandle,
+    ...(hasModelSettings && { model_settings: modelSettings }),
+    ...(contextWindow && { context_window_limit: contextWindow }),
+    ...((typeof updateArgs?.max_output_tokens === "number" ||
+      updateArgs?.max_output_tokens === null) && {
+      max_tokens: updateArgs.max_output_tokens,
+    }),
+  });
+
+  const finalAgent = await backend.retrieveAgent(agentId, {
+    include: ["agent.secrets", "agent.tools", "agent.tags"],
+  });
+  return finalAgent;
+}
+
+/**
+ * Updates a conversation's model and model settings.
+ *
+ * Uses conversation-scoped model overrides so different conversations can
+ * run with different models without mutating the agent's default model.
+ *
+ * @param conversationId - The conversation ID (or "default")
+ * @param modelHandle - The model handle (e.g., "anthropic/claude-sonnet-4-5-20250929")
+ * @param updateArgs - Additional config args (reasoning_effort, enable_reasoner, etc.)
+ * @returns The updated conversation from the server
+ */
+export async function updateConversationLLMConfig(
+  conversationId: string,
+  modelHandle: string,
+  updateArgs?: Record<string, unknown>,
+  options?: UpdateAgentLLMConfigOptions,
+): Promise<Conversation> {
+  const backend = getBackend();
+
+  const modelSettings = buildModelSettings(modelHandle, updateArgs);
+  const explicitContextWindow = updateArgs?.context_window as
+    | number
+    | undefined;
+  const shouldPreserveContextWindow = options?.preserveContextWindow === true;
+  const contextWindow =
+    explicitContextWindow ??
+    (!shouldPreserveContextWindow
+      ? await getModelContextWindow(modelHandle)
+      : undefined);
+  const hasModelSettings = Object.keys(modelSettings).length > 0;
+  const payload = {
+    model: modelHandle,
+    ...(hasModelSettings && { model_settings: modelSettings }),
+    ...(contextWindow && { context_window_limit: contextWindow }),
+  } as Parameters<typeof backend.updateConversation>[1];
+
+  return backend.updateConversation(conversationId, payload);
+}
+
+/**
+ * Recompile an agent's system prompt after memory writes so server-side prompt
+ * state picks up the latest memory content.
+ *
+ * @param conversationId - The conversation whose prompt should be recompiled
+ * @param agentId - Agent id for the parent conversation
+ * @param dryRun - Optional dry-run control
+ * @param clientOverride - Optional injected client for tests
+ * @returns The compiled system prompt returned by the API
+ */
+export async function recompileAgentSystemPrompt(
+  conversationId: string,
+  agentId: string,
+  dryRun?: boolean,
+  clientOverride?: {
+    conversations: {
+      recompile: (
+        conversationId: string,
+        params: {
+          dry_run?: boolean;
+          agent_id?: string;
+        },
+      ) => Promise<string>;
+    };
+  },
+): Promise<string> {
+  const backend = getBackend();
+  if (!clientOverride && !backend.capabilities.promptRecompile) {
+    throw new Error(
+      "Server-side prompt recompile is not supported by this backend yet",
+    );
+  }
+
+  if (!agentId) {
+    throw new Error("recompileAgentSystemPrompt requires agentId");
+  }
+
+  const params = {
+    dry_run: dryRun,
+    agent_id: agentId,
+  };
+
+  if (clientOverride) {
+    return clientOverride.conversations.recompile(conversationId, params);
+  }
+
+  return backend.recompileConversation(conversationId, params);
+}
+
+export interface SystemPromptUpdateResult {
+  success: boolean;
+  message: string;
+}
+
+/**
+ * Updates an agent's system prompt with raw content.
+ *
+ * @param agentId - The agent ID
+ * @param systemPromptContent - The raw system prompt content to update
+ * @returns Result with success status and message
+ */
+export async function updateAgentSystemPromptRaw(
+  agentId: string,
+  systemPromptContent: string,
+): Promise<SystemPromptUpdateResult> {
+  try {
+    await getBackend().updateAgent(agentId, {
+      system: systemPromptContent,
+    });
+
+    return {
+      success: true,
+      message: "System prompt updated successfully",
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `Failed to update system prompt: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Result from updating a system prompt on an agent
+ */
+export interface UpdateSystemPromptResult {
+  success: boolean;
+  message: string;
+  agent: AgentState | null;
+}
+
+/**
+ * Updates an agent's system prompt by ID or subagent name.
+ * Resolves the ID to content, updates the agent, and returns the refreshed agent state.
+ *
+ * @param agentId - The agent ID to update
+ * @param systemPromptId - System prompt ID (e.g., "codex") or subagent name (e.g., "recall")
+ * @returns Result with success status, message, and updated agent state
+ */
+export async function updateAgentSystemPrompt(
+  agentId: string,
+  systemPromptId: string,
+): Promise<UpdateSystemPromptResult> {
+  try {
+    const { isKnownPreset, resolveAndBuildSystemPrompt } = await import(
+      "@/agent/prompt-assets"
+    );
+    const { recordManagedSystemPrompt } = await import(
+      "@/agent/system-prompt-versioning"
+    );
+    const { settingsManager } = await import("@/settings-manager");
+
+    const backend = getBackend();
+    const memoryMode = backend.capabilities.localMemfs
+      ? "local-memfs"
+      : settingsManager.isReady && settingsManager.isMemfsEnabled(agentId)
+        ? "memfs"
+        : "standard";
+
+    const systemPromptContent = await resolveAndBuildSystemPrompt(
+      systemPromptId,
+      memoryMode,
+    );
+
+    debugLog("modify", "systemPromptContent: %s", systemPromptContent);
+
+    const updateResult = await updateAgentSystemPromptRaw(
+      agentId,
+      systemPromptContent,
+    );
+    if (!updateResult.success) {
+      return {
+        success: false,
+        message: updateResult.message,
+        agent: null,
+      };
+    }
+
+    // Persist preset for known presets; clear stale preset for subagent/unknown
+    if (settingsManager.isReady) {
+      if (isKnownPreset(systemPromptId)) {
+        recordManagedSystemPrompt(
+          agentId,
+          systemPromptId,
+          memoryMode,
+          systemPromptContent,
+        );
+      } else {
+        settingsManager.clearSystemPromptPreset(agentId);
+      }
+    }
+
+    // Re-fetch agent to get updated state (include relationships so
+    // callers that rely on agent.tags/tools/secrets aren't broken).
+    const agent = await backend.retrieveAgent(agentId, {
+      include: ["agent.secrets", "agent.tools", "agent.tags"],
+    });
+
+    return {
+      success: true,
+      message: "System prompt applied successfully",
+      agent,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `Failed to apply system prompt: ${error instanceof Error ? error.message : String(error)}`,
+      agent: null,
+    };
+  }
+}
+
+/**
+ * Updates an agent's system prompt to swap between full prompt variants when
+ * the stored managed prompt hash is known. Custom prompts are already complete and
+ * are left unchanged.
+ *
+ * @param agentId - The agent ID to update
+ * @param enableMemfs - Whether to use the memfs or standard full prompt variant
+ * @returns Result with success status and message
+ */
+export async function updateAgentSystemPromptMemfs(
+  agentId: string,
+  enableMemfs: boolean,
+): Promise<SystemPromptUpdateResult> {
+  try {
+    const { settingsManager } = await import("@/settings-manager");
+    const { isKnownPreset, buildSystemPrompt } = await import(
+      "@/agent/prompt-assets"
+    );
+    const { hashSystemPrompt, recordManagedSystemPrompt } = await import(
+      "@/agent/system-prompt-versioning"
+    );
+
+    const newMode = enableMemfs
+      ? getBackend().capabilities.localMemfs
+        ? "local-memfs"
+        : "memfs"
+      : "standard";
+    const storedPreset = settingsManager.isReady
+      ? settingsManager.getSystemPromptPreset(agentId)
+      : undefined;
+    const storedHash = settingsManager.isReady
+      ? settingsManager.getSystemPromptHash(agentId)
+      : undefined;
+
+    let nextSystemPrompt: string;
+    if (storedPreset && isKnownPreset(storedPreset)) {
+      const agent = await getBackend().retrieveAgent(agentId);
+      const currentSystemPrompt = agent.system || "";
+      if (storedHash && hashSystemPrompt(currentSystemPrompt) !== storedHash) {
+        if (settingsManager.isReady) {
+          settingsManager.setSystemPromptCustom(agentId);
+        }
+        return {
+          success: true,
+          message: "Custom system prompt left unchanged for memory mode",
+        };
+      }
+
+      if (!storedHash && settingsManager.isReady) {
+        const currentMode = settingsManager.isMemfsEnabled(agentId)
+          ? getBackend().capabilities.localMemfs
+            ? "local-memfs"
+            : "memfs"
+          : "standard";
+        if (
+          currentSystemPrompt !== buildSystemPrompt(storedPreset, currentMode)
+        ) {
+          settingsManager.setSystemPromptCustom(agentId);
+          return {
+            success: true,
+            message: "Custom system prompt left unchanged for memory mode",
+          };
+        }
+      }
+
+      nextSystemPrompt = buildSystemPrompt(storedPreset, newMode);
+    } else {
+      const agent = await getBackend().retrieveAgent(agentId);
+      nextSystemPrompt = agent.system || "";
+    }
+
+    await getBackend().updateAgent(agentId, {
+      system: nextSystemPrompt,
+    });
+
+    if (storedPreset && isKnownPreset(storedPreset)) {
+      recordManagedSystemPrompt(
+        agentId,
+        storedPreset,
+        newMode,
+        nextSystemPrompt,
+      );
+    }
+
+    return {
+      success: true,
+      message: enableMemfs
+        ? "System prompt updated for memfs memory mode"
+        : "System prompt updated for standard memory mode",
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `Failed to update system prompt memfs: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}

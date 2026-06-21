@@ -1,0 +1,23 @@
+# Nix build artifacts
+result
+result-*
+
+# Flatpak builder cache
+.flatpak-builder/
+
+# Temp / cache
+.letta/
+.agents/
+.codex/
+.cursor/
+tmp/
+
+# Editor / IDE
+.zed/
+.vscode/
+
+# Direnv
+.direnv/
+
+# Embedded repos
+noctalia-plugins/

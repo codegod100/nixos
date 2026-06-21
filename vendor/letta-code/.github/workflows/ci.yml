@@ -1,0 +1,408 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  classify:
+    name: Classify change
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_bump_only: ${{ steps.classify.outputs.release_bump_only }}
+      run_heavy_ci: ${{ steps.classify.outputs.run_heavy_ci }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect release-bump-only change
+        id: classify
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TITLE=$(jq -er '.pull_request.title' "$GITHUB_EVENT_PATH")
+            BASE_SHA=$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")
+            HEAD_SHA=$(jq -er '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
+          else
+            TITLE=$(git log --format=%s "${{ github.event.before }}..${{ github.sha }}" | tail -n 1)
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.sha }}"
+          fi
+
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          TITLE_MATCH=false
+          if [[ "$TITLE" == chore:\ bump\ version\ to* ]]; then
+            TITLE_MATCH=true
+          fi
+
+          FILES_MATCH=true
+          if [ -z "$CHANGED_FILES" ]; then
+            FILES_MATCH=false
+          fi
+
+          for file in $CHANGED_FILES; do
+            case "$file" in
+              package.json) ;;
+              *)
+                FILES_MATCH=false
+                ;;
+            esac
+          done
+
+          RELEASE_BUMP_ONLY=false
+          if [ "$TITLE_MATCH" = true ] && [ "$FILES_MATCH" = true ]; then
+            RELEASE_BUMP_ONLY=true
+          fi
+
+          echo "release_bump_only=$RELEASE_BUMP_ONLY" >> "$GITHUB_OUTPUT"
+
+          if [ "$RELEASE_BUMP_ONLY" = true ]; then
+            echo "run_heavy_ci=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_heavy_ci=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "title=$TITLE"
+          printf 'changed_files=%s\n' "$CHANGED_FILES"
+
+  check:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile
+
+      - name: Lint & Type Check
+        run: bun run check
+
+  update-chain-smoke:
+    needs: check
+    name: Update Chain Smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile
+
+      - name: Build bundle
+        run: bun run build
+
+      - name: Manual update-chain smoke test
+        run: bun run test:update-chain:manual
+
+  build:
+    needs: [classify, check]
+    if: needs.classify.outputs.run_heavy_ci == 'true'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64 (macos-14)
+            runner: macos-14
+          - name: Linux x64 (ubuntu-24.04)
+            runner: ubuntu-24.04
+          - name: Linux arm64 (ubuntu-24.04-arm)
+            runner: ubuntu-24.04-arm
+          - name: Windows x64 (windows-latest)
+            runner: windows-latest
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile
+
+      - name: Unlock GNOME Keyring
+        if: runner.os == 'Linux'
+        uses: t1m0thyj/unlock-keyring@v1
+
+      - name: Run tests (extended timeout)
+        timeout-minutes: 15
+        # Unit tests must pass for fork PRs (no secrets). Keep API-dependent tests
+        # in a separate gated step.
+        run: node scripts/run-unit-tests.cjs
+
+      - name: Run integration tests (API)
+        # Only run on push to main or non-Dependabot PRs from the same repo
+        # (fork and Dependabot PRs cannot access secrets).
+        if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          LETTA_API_KEY: ${{ secrets.LETTA_API_KEY }}
+        run: bun test src/integration-tests --timeout 15000
+
+      - name: Build bundle
+        run: bun run build
+
+      - name: CLI help smoke test
+        run: ./letta.js --help
+
+      - name: CLI version smoke test
+        run: ./letta.js --version || true
+
+      - name: Bundle size check
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            SIZE=$(powershell -command "(Get-Item letta.js).length")
+          else
+            SIZE=$(stat -f%z ./letta.js 2>/dev/null || stat -c%s ./letta.js 2>/dev/null)
+          fi
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "Bundle size: $SIZE bytes (~${SIZE_MB}MB)"
+          # Warn if bundle is larger than 50MB
+          if [ $SIZE -gt 52428800 ]; then
+            echo "⚠️  Warning: Bundle size is larger than 50MB"
+          else
+            echo "✓ Bundle size is acceptable"
+          fi
+
+      # Test npm install flow with native shell to catch shebang issues
+      # This uses PowerShell on Windows (not Git Bash) to match real user experience
+      - name: Test npm install flow (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npm pack
+          npm install -g (Get-Item letta-ai-letta-code-*.tgz).FullName
+          letta --help
+
+      - name: Test npm install flow (Unix)
+        if: runner.os != 'Windows'
+        shell: sh
+        run: |
+          npm pack
+          npm install -g ./letta-ai-letta-code-*.tgz
+          letta --help
+
+      - name: Headless smoke test (API)
+        # Only run on push to main or non-Dependabot PRs from the same repo
+        # (fork and Dependabot PRs cannot access secrets).
+        if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          LETTA_API_KEY: ${{ secrets.LETTA_API_KEY }}
+        run: ./letta.js --prompt "ping" --tools "" --permission-mode standard
+
+      - name: Windows integration test
+        # Only run on Windows, with API key available
+        if: ${{ runner.os == 'Windows' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+        env:
+          LETTA_API_KEY: ${{ secrets.LETTA_API_KEY }}
+        run: bun run src/test-utils/headless-windows.ts --model sonnet-4.6-low
+
+      - name: Publish dry-run
+        if: ${{ github.event_name == 'push' }}
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+          LETTA_API_KEY: dummy
+        run: bun publish --dry-run
+
+      - name: Pack (no auth available)
+        if: ${{ github.event_name != 'push' }}
+        run: bun pm pack
+
+  node18-smoke:
+    needs: [classify, check]
+    if: needs.classify.outputs.run_heavy_ci == 'true'
+    name: Node 18 Smoke Test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile
+
+      - name: Build bundle
+        run: bun run build
+
+      - name: Setup Node 18
+        uses: actions/setup-node@v6
+        with:
+          node-version: "18"
+
+      - name: Verify Node version
+        run: node --version
+
+      - name: CLI smoke test (Node 18)
+        run: node ./letta.js --help
+
+  headless:
+    needs: [classify, check]
+    if: needs.classify.outputs.run_heavy_ci == 'true'
+    name: Headless / ${{ matrix.model }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Note: gpt-4.1 / gemini-3.1-pro / glm-4.7 are temporarily
+        # excluded here due to intermittent provider-side scenario instability.
+        model: [gpt-5-mini-medium, sonnet-4.6-low, haiku, gemini-3.1-flash-lite]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile
+
+      - name: Run headless scenario (all outputs)
+        if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          LETTA_API_KEY: ${{ secrets.LETTA_API_KEY }}
+        run: |
+          bun run src/test-utils/headless-scenario.ts --model "${{ matrix.model }}" --output text --parallel on
+          bun run src/test-utils/headless-scenario.ts --model "${{ matrix.model }}" --output json --parallel on
+          bun run src/test-utils/headless-scenario.ts --model "${{ matrix.model }}" --output stream-json --parallel on
+
+  headless-local:
+    needs: [classify, check]
+    if: ${{ needs.classify.outputs.run_heavy_ci == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    name: Headless Local / ${{ matrix.model }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Local runs use the provider catalog directly, so use provider-native IDs.
+        model: [openai/gpt-5-mini, sonnet-4.6-low, haiku, gemini-3.1-flash-lite]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile
+
+      - name: Run local backend headless scenario (all outputs)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+        run: |
+          bun run src/test-utils/headless-scenario.ts --backend local --model "${{ matrix.model }}" --output text --parallel on
+          bun run src/test-utils/headless-scenario.ts --backend local --model "${{ matrix.model }}" --output json --parallel on
+          bun run src/test-utils/headless-scenario.ts --backend local --model "${{ matrix.model }}" --output stream-json --parallel on
+
+  docker:
+    needs: [classify, check]
+    name: Docker Integration
+    runs-on: ubuntu-latest
+    # Only run on push to main or non-Dependabot PRs from the same repo
+    # (fork and Dependabot PRs cannot access secrets).
+    if: ${{ needs.classify.outputs.run_heavy_ci == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile
+
+      - name: Build bundle
+        run: bun run build
+
+      - name: Start Letta Docker server
+        run: |
+          docker run -d \
+            --name letta-server \
+            -p 8283:8283 \
+            -e ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }} \
+            letta/letta:latest
+
+      - name: Wait for Letta server to be ready
+        run: |
+          echo "Waiting for Letta server to be healthy..."
+          timeout 120 bash -c 'until curl -sf http://localhost:8283/v1/health; do sleep 2; done'
+          echo "Letta server is ready!"
+
+      - name: Docker smoke test
+        env:
+          LETTA_BASE_URL: http://localhost:8283
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: ./letta.js --prompt "ping" --tools "" --permission-mode standard --model haiku
+
+      - name: Docker logs (on failure)
+        if: failure()
+        run: docker logs letta-server
+
+      - name: Stop Letta Docker server
+        if: always()
+        run: docker stop letta-server || true
