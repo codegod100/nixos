@@ -1,21 +1,5 @@
 {
   "nodes": {
-    "bun-bin": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./vendor/bun-bin",
-        "type": "path"
-      },
-      "original": {
-        "path": "./vendor/bun-bin",
-        "type": "path"
-      },
-      "parent": []
-    },
     "determinate": {
       "inputs": {
         "determinate-nixd-aarch64-darwin": "determinate-nixd-aarch64-darwin",
@@ -91,11 +75,7 @@
     },
     "flake-parts": {
       "inputs": {
-        "nixpkgs-lib": [
-          "determinate",
-          "nix",
-          "nixpkgs"
-        ]
+        "nixpkgs-lib": ["determinate", "nix", "nixpkgs"]
       },
       "locked": {
         "lastModified": 1748821116,
@@ -113,15 +93,8 @@
     "git-hooks-nix": {
       "inputs": {
         "flake-compat": "flake-compat",
-        "gitignore": [
-          "determinate",
-          "nix"
-        ],
-        "nixpkgs": [
-          "determinate",
-          "nix",
-          "nixpkgs"
-        ]
+        "gitignore": ["determinate", "nix"],
+        "nixpkgs": ["determinate", "nix", "nixpkgs"]
       },
       "locked": {
         "lastModified": 1747372754,
@@ -136,47 +109,7 @@
         "url": "https://flakehub.com/f/cachix/git-hooks.nix/0.1.941"
       }
     },
-    "home-manager": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1781989573,
-        "narHash": "sha256-npfH7Zv7t1akX/ArqCNro4zU4ViPlghLaPnbEfHbCxk=",
-        "owner": "nix-community",
-        "repo": "home-manager",
-        "rev": "78e7d8b13ecd7f5256a5c11ce216876164099d9f",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-community",
-        "repo": "home-manager",
-        "type": "github"
-      }
-    },
-    "home-manager_2": {
-      "inputs": {
-        "nixpkgs": [
-          "zen-browser",
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1781497404,
-        "narHash": "sha256-9GAF8sSsnkyCVCWkomXR0T+zdSxyUlfPt6neQidimdg=",
-        "owner": "nix-community",
-        "repo": "home-manager",
-        "rev": "1285cd3d6882a9847f2d56ed5541b3350c8a6162",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-community",
-        "repo": "home-manager",
-        "type": "github"
-      }
-    },
+
     "nix": {
       "inputs": {
         "flake-parts": "flake-parts",
@@ -339,51 +272,10 @@
     },
     "root": {
       "inputs": {
-        "bun-bin": "bun-bin",
         "determinate": "determinate",
-        "home-manager": "home-manager",
         "nixpkgs": "nixpkgs_3",
         "noctalia": "noctalia",
-        "noctalia-greeter": "noctalia-greeter",
-        "zed-preview": "zed-preview",
-        "zen-browser": "zen-browser"
-      }
-    },
-    "zed-preview": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./vendor/zed-preview",
-        "type": "path"
-      },
-      "original": {
-        "path": "./vendor/zed-preview",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "zen-browser": {
-      "inputs": {
-        "home-manager": "home-manager_2",
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1781932488,
-        "narHash": "sha256-v7xGsRuuTPyKT1BzZYXfhciGKBRxQiBPn/wyvHDriqM=",
-        "owner": "0xc000022070",
-        "repo": "zen-browser-flake",
-        "rev": "bed09c284f289ad29cd7936e6297c7c16841903a",
-        "type": "github"
-      },
-      "original": {
-        "owner": "0xc000022070",
-        "repo": "zen-browser-flake",
-        "type": "github"
+        "noctalia-greeter": "noctalia-greeter"
       }
     }
   },
