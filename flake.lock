@@ -2,7 +2,6 @@
   "nodes": {
     "bun-bin": {
       "inputs": {
-        "bun-src": "bun-src",
         "nixpkgs": [
           "nixpkgs"
         ]
@@ -16,20 +15,6 @@
         "type": "path"
       },
       "parent": []
-    },
-    "bun-src": {
-      "flake": false,
-      "locked": {
-        "path": "./bun-linux-x64",
-        "type": "path"
-      },
-      "original": {
-        "path": "./bun-linux-x64",
-        "type": "path"
-      },
-      "parent": [
-        "bun-bin"
-      ]
     },
     "determinate": {
       "inputs": {
@@ -368,8 +353,7 @@
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
-        ],
-        "zed-preview-src": "zed-preview-src"
+        ]
       },
       "locked": {
         "path": "./vendor/zed-preview",
@@ -380,20 +364,6 @@
         "type": "path"
       },
       "parent": []
-    },
-    "zed-preview-src": {
-      "flake": false,
-      "locked": {
-        "path": "./zed-preview.app",
-        "type": "path"
-      },
-      "original": {
-        "path": "./zed-preview.app",
-        "type": "path"
-      },
-      "parent": [
-        "zed-preview"
-      ]
     },
     "zen-browser": {
       "inputs": {

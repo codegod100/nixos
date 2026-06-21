@@ -1,36 +1,28 @@
 {
   description = "Prebuilt bun binary wrapped with steam-run";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    bun-src = {
-      url = "path:./bun-linux-x64";
-      flake = false;
-    };
-  };
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { self, nixpkgs, bun-src }:
+  outputs = { self, nixpkgs }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };
     in
     {
       packages.${system}.default = pkgs.stdenv.mkDerivation {
-        pname = "bun-bin";
+        pname = "bun";
         version = "1.3.14";
-
-        src = bun-src;
 
         nativeBuildInputs = with pkgs; [ makeWrapper ];
 
-        dontConfigure = true;
-        dontBuild = true;
+        dontUnpack = true;
 
         installPhase = ''
           runHook preInstall
 
           mkdir -p $out/bin $out/libexec
-          cp bun $out/libexec/bun
+          local bun_src=${/home/nandi/.local/share/nixos-vendor/bun-linux-x64/bun}
+          cp $bun_src $out/libexec/bun
           chmod +x $out/libexec/bun
 
           makeWrapper ${pkgs.steam-run}/bin/steam-run $out/bin/bun \

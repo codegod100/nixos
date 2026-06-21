@@ -251,7 +251,12 @@ in
     python-preference = "only-system"
   '';
 
-  programs.nushell.enable = true;
+  programs.nushell = {
+    enable = true;
+    extraConfig = ''
+      $env.config = ($env.config | merge { show_banner: false })
+    '';
+  };
 
   programs.starship = {
     enable = true;
