@@ -100,13 +100,11 @@
                 after = [ "network-online.target" ];
                 wants = [ "network-online.target" ];
                 wantedBy = [ "multi-user.target" ];
-                path = [ pkgs.bun ];
                 serviceConfig = {
                   Type = "simple";
                   User = username;
                   WorkingDirectory = "/home/${username}";
-                  Environment = [ "PATH=/home/${username}/.cache/.bun/bin:/run/current-system/sw/bin" ];
-                  ExecStart = "${pkgs.bash}/bin/bash -lc 'exec opencode serve'";
+                  ExecStart = "${pkgs.opencode}/bin/opencode serve";
                   Restart = "on-failure";
                   RestartSec = 5;
                 };
