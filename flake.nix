@@ -95,6 +95,22 @@
               };
               services.tailscale.enable = true;
               virtualisation.docker.enable = true;
+              systemd.services.opencode = {
+                description = "OpenCode server";
+                after = [ "network-online.target" ];
+                wants = [ "network-online.target" ];
+                wantedBy = [ "multi-user.target" ];
+                path = [ pkgs.bun ];
+                serviceConfig = {
+                  Type = "simple";
+                  User = username;
+                  WorkingDirectory = "/home/${username}";
+                  Environment = [ "PATH=/home/${username}/.cache/.bun/bin:/run/current-system/sw/bin" ];
+                  ExecStart = "${pkgs.bash}/bin/bash -lc 'exec opencode serve'";
+                  Restart = "on-failure";
+                  RestartSec = 5;
+                };
+              };
               i18n.defaultLocale = "en_US.UTF-8";
               i18n.extraLocaleSettings = {
                 LC_ADDRESS = "en_US.UTF-8";
@@ -182,6 +198,7 @@
                 subGidRanges = [{ startGid = 100000; count = 65536; }];
                 shell = pkgs.nushell;
                 packages = with pkgs; [
+                  bun
                 ];
               };
 
