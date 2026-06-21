@@ -54,7 +54,7 @@
     extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
   };
   services.tailscale.enable = true;
-  virtualisation.docker.enable = true;
+  virtualisation.podman.enable = true;
   i18n.defaultLocale = "en_US.UTF-8";
   i18n.extraLocaleSettings = {
     LC_ADDRESS = "en_US.UTF-8";
@@ -126,9 +126,7 @@
   users.users.${username} = {
     isNormalUser = true;
     description = "User";
-    extraGroups = [ "networkmanager" "wheel" "audio" "video" "docker" ];
-    subUidRanges = [{ startUid = 100000; count = 65536; }];
-    subGidRanges = [{ startGid = 100000; count = 65536; }];
+    extraGroups = [ "networkmanager" "wheel" "audio" "video" ];
     shell = pkgs.nushell;
     packages = with pkgs; [
       # Keep a working baseline while adding custom tools above.

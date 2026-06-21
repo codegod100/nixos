@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     zed-preview-src = {
-      url = "path:/home/nandi/zed-preview.app";
+      url = "path:./zed-preview.app";
       flake = false;
     };
   };

@@ -1,6 +1,0 @@
-# Bun configuration for Letta Code
-
-[loader]
-".mdx" = "text"
-".md" = "text"
-".txt" = "text"

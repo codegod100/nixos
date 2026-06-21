@@ -21,17 +21,18 @@
       url = "github:noctalia-dev/noctalia-greeter";
     };
 
-    lettaCode = {
-      url = "path:./vendor/letta-code";
-    };
-
     zed-preview = {
       url = "path:./vendor/zed-preview";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    bun-bin = {
+      url = "path:./vendor/bun-bin";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, determinate, home-manager, noctalia, noctalia-greeter, lettaCode, zen-browser, zed-preview, ... }@inputs:
+  outputs = { self, nixpkgs, determinate, home-manager, noctalia, noctalia-greeter, zen-browser, zed-preview, bun-bin, ... }@inputs:
     let
       system = "x86_64-linux";
       hostName = "nixos";
@@ -71,7 +72,10 @@
         modules = [
           ({ pkgs, ... }: {
             home-manager.backupFileExtension = "backup";
-            home.packages = [ zed-preview.packages.${system}.default ];
+            home.packages = [
+              zed-preview.packages.${system}.default
+              bun-bin.packages.${system}.default
+            ];
           })
           ./home.nix
         ];

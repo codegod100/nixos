@@ -327,7 +327,6 @@ in
     pkgs.adwaita-icon-theme
     pkgs.bazaar
     pkgs.btop
-    pkgs.bun
     pkgs.bubblewrap
     pkgs.chromium
     pkgs.devenv
@@ -360,7 +359,7 @@ in
     pkgs.xwayland-satellite
     pkgs.zed-editor
     inputs.zed-preview.packages.${pkgs.stdenv.hostPlatform.system}.default
-    inputs.lettaCode.packages.${pkgs.stdenv.hostPlatform.system}.default
+    inputs.bun-bin.packages.${pkgs.stdenv.hostPlatform.system}.default
     inputs.noctalia.packages.${pkgs.stdenv.hostPlatform.system}.default
     inputs.zen-browser.packages.${pkgs.stdenv.hostPlatform.system}.default
     footNewWindowHere

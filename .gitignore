@@ -21,3 +21,7 @@ tmp/
 
 # Embedded repos
 noctalia-plugins/
+
+# Vendored binary sources (large, local only)
+vendor/bun-bin/bun-linux-x64/
+vendor/zed-preview/zed-preview.app/
