@@ -80,6 +80,7 @@
                 fsType = "ext4";
               };
               swapDevices = [ ];
+              zramSwap.enable = true;
               nixpkgs.hostPlatform = lib.mkDefault system;
               hardware.cpu.intel.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
 
@@ -166,6 +167,13 @@
               };
 
               programs.niri.enable = true;
+              programs.nix-ld = {
+                enable = true;
+                libraries = with pkgs; [
+                  # Add any missing dynamic libraries for unpackaged programs
+                  # here, NOT in environment.systemPackages
+                ];
+              };
               programs.noctalia.enable = true;
               programs.firefox.enable = true;
               security.rtkit.enable = true;
